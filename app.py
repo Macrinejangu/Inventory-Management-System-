@@ -1,3 +1,9 @@
+from openfoodfacts import (
+    ExternalAPIError,
+    ProductNotFound,
+    lookup_barcode,
+    search_products,
+)
 from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 from itertools import count
@@ -140,6 +146,57 @@ def create_app(initial_inventory=None):
         inventory.remove(item)
         return "", 204
 
+    @app.errorhandler(ProductNotFound)
+    def product_not_found(error):
+        return jsonify({"error": str(error)}), 404
+
+    @app.errorhandler(ExternalAPIError)
+    def external_service_error(error):
+        return jsonify({"error": str(error)}), 502
+
+    @app.get("/products/barcode/<barcode>")
+    def find_product_by_barcode(barcode):
+        return jsonify(lookup_barcode(barcode)), 200
+
+    @app.get("/products/search")
+    def find_products_by_name():
+        name = request.args.get("name", "")
+        return jsonify(search_products(name)), 200
+
+    @app.post("/inventory/import")
+    def import_product():
+        data = request.get_json()
+        if not isinstance(data, dict):
+            raise ValueError("Request body must be a JSON object.")
+
+        allowed = {"barcode", "product_name", "price", "stock"}
+        if set(data) - allowed:
+            raise ValueError("Unexpected import fields.")
+
+        # Validate local inventory values before contacting the service.
+        local = validate_item({
+            "product_name": data.get("product_name", "Imported product"),
+            "price": data.get("price"),
+            "stock": data.get("stock"),
+        })
+
+        product = lookup_barcode(data.get("barcode"))
+
+        # A supplied name covers products missing a name externally.
+        product["product_name"] = (
+            product["product_name"] or local["product_name"]
+        )
+
+        details = validate_item({
+            **product,
+            "price": local["price"],
+            "stock": local["stock"],
+        })
+
+        item = {"id": next(ids), **details}
+        inventory.append(item)
+
+        return jsonify(item), 201
     return app
 
 
